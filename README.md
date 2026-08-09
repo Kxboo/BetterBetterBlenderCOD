@@ -7,10 +7,10 @@ Stolen from Marv, adds support for cosmetic bones and auto-normalizes bones with
 
 ---
 
-> **To apply the fix:** Replace `xbin.py` in your PyCoD folder, or do a complete reinstall — your choice.
+> **To apply the fix:** Replace `xanim.py` in your PyCoD folder, or do a complete reinstall — your choice.
 ---
 
 ## xanim_bin Notetrack Fix
 
 Three bugs were found and fixed in the xbin writer.
-https://github.com/Kxboo/BetterBetterBlenderCOD/blob/main/PyCoD/xbin.py
+https://github.com/Kxboo/BetterBetterBlenderCOD/blob/main/PyCoD/xanim.py
