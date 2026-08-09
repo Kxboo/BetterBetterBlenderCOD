@@ -330,6 +330,7 @@ class Anim(XBinIO, object):
                 string = line_split[2].strip('"')
                 note = Note(frame, string)
                 self.notes.append(note)
+                note_index += 1
 
                 if note_index == note_count:
                     note_index = 0
