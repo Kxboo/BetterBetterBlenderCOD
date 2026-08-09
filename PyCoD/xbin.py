@@ -59,7 +59,8 @@ def padded(size):
 
 
 def padding(size):
-    return 4 - size & 0x3
+    remainder = size & 0x3
+    return (4 - remainder) & 0x3
 
 
 def __clamp_float_to_short__(value, _range=(-32768, 32767)):
@@ -482,9 +483,9 @@ class XBlock(object):
         string = __str_packable__(note.string)
         data = struct.pack('Hxxi%ds' % (len(string) + 1),
                            0x1675, int(note.frame), string)
-        end = file.tell() + len(data)
         file.write(data)
-        file.write(bytearray(0) * padding(end))
+        end = file.tell()
+        file.write(bytearray(padding(end)))
 
 
 class XBinIO(object):
@@ -992,22 +993,9 @@ class XBinIO(object):
                 XBlock.WriteOffsetBlock(file, part.offset)
                 XBlock.WriteMatrixBlock(file, part.matrix)
 
+        # Flat notetrack format: one 0x7A6C with total count, then all 0x1675 frames.
         XBlock.WriteMetaInt16Block(file, 0x7A6C, len(anim.notes))
-        if anim.notes:
-            for note in anim.notes:
-                XBlock.WriteNoteFrame(file, note)
-
-            # Deprecated
-            # for part_index, part in enumerate(anim.parts):
-            #     XBlock.WriteMetaInt16Block(file, 0xC7F3, part_index)
-            #     track_count = 0
-            #     track_count = 0 if part_index != 0 else (
-            #         1 if len(anim.notes) != 0 else 0)
-            #     XBlock.WriteMetaInt16Block(file, 0x9016, track_count)
-            #     if track_count != 0:
-            #         XBlock.WriteMetaInt16Block(file, 0x4643, 0)
-            #         XBlock.WriteMetaInt16Block(file, 0x7A6C, len(anim.notes))
-            #         for note in anim.notes:
-            #             XBlock.WriteNoteFrame(file, note)
+        for note in anim.notes:
+            XBlock.WriteNoteFrame(file, note)
 
         XBinIO.__compress_internal__(file, real_file, close_files=True)
