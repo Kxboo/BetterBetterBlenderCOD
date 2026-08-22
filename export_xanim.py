@@ -21,6 +21,7 @@
 import os
 import bpy
 from string import Template
+from bpy_extras import anim_utils
 
 from . import shared as shared
 from .PyCoD import xanim as XAnim
@@ -37,17 +38,60 @@ class CustomTemplate(Template):
         return self.substitute(args)
 
 
-def calc_frame_range(action):
+def get_action_fcurves(action, ob=None):
+    '''
+    Returns a list of all fcurves for the given action.
+
+    Blender 4.4+ introduced slotted/layered actions, and Blender 5.0 removed
+    the old direct `action.fcurves` shortcut for non-legacy actions. This
+    handles both the old (legacy) and new (slotted) action layouts so the
+    rest of the exporter doesn't need to care which one it's dealing with.
+    '''
+    if action is None:
+        return []
+
+    # Legacy actions (created pre-4.4, or empty actions) still expose
+    # .fcurves directly.
+    is_legacy = getattr(action, 'is_action_legacy', True)
+    if is_legacy:
+        return list(action.fcurves)
+
+    # Slotted action: fcurves live inside a channelbag tied to a specific
+    # slot. Prefer the slot the object is actually subscribed to; fall back
+    # to the action's first slot if that isn't available.
+    slot = None
+    if ob is not None and ob.animation_data is not None:
+        slot = ob.animation_data.action_slot
+    if slot is None and action.slots:
+        slot = action.slots[0]
+    if slot is None:
+        return []
+
+    channelbag = anim_utils.action_get_channelbag_for_slot(action, slot)
+    return list(channelbag.fcurves) if channelbag else []
+
+
+def calc_frame_range(action, ob=None):
     '''
     action.frame_range is inaccurate for actions with 0 or 1 keyframe(s)
     This function returns the real (inclusive) frame range for a given action
     '''
-    if len(action.fcurves) == 0:
+    fcurves = get_action_fcurves(action, ob)
+    if len(fcurves) == 0:
         return (0, 0)
-    keys = [fcurve.keyframe_points for fcurve in action.fcurves]
+    keys = [fcurve.keyframe_points for fcurve in fcurves]
     points = [point for keyframe_points in keys for point in keyframe_points]
     frames = [point.co[0] for point in points]
     return (min(frames), max(frames))
+
+
+def collect_notes(markers, frame_start, frame_end):
+    seen = []
+    for m in markers:
+        if frame_start <= m.frame <= frame_end:
+            seen.append((m.frame - frame_start, m.name))
+    seen.sort(key=lambda x: x[0])
+    return [XAnim.Note(frame, name) for frame, name in seen]
 
 
 def export_action(self, context, progress, action,
@@ -66,10 +110,8 @@ def export_action(self, context, progress, action,
 
     anim = XAnim.Anim()
     anim.version = 3
-
     anim.framerate = framerate
 
-    # Determine which bones will be exported for this action
     if use_selection:
         pose_bones = context.selected_pose_bones
     else:
@@ -78,16 +120,15 @@ def export_action(self, context, progress, action,
     for bone in pose_bones:
         anim.parts.append(XAnim.PartInfo(bone.name))
 
-    # Fallback to ACTION frame range mode if none set
     if frame_range is None:
-        frame_range = calc_frame_range(action)
+        frame_range = calc_frame_range(action, ob)
 
-    for frame_number in range(int(frame_range[0]), int(frame_range[1]) + 1):
-        # Set frame directly
+    frame_start = int(frame_range[0])
+    frame_end = int(frame_range[1])
+
+    for frame_number in range(frame_start, frame_end + 1):
         context.scene.frame_set(frame_number)
-
-        # Add the animation data for each bone
-        frame = XAnim.Frame(frame_number)
+        frame = XAnim.Frame(frame_number - frame_start)
         for bone in pose_bones:
             offset = tuple(bone.head * global_scale)
             m = bone.matrix.to_3x3().transposed()
@@ -101,14 +142,15 @@ def export_action(self, context, progress, action,
             markers = context.scene.timeline_markers
         elif use_notetrack_mode == 'ACTION':
             markers = action.pose_markers
+            # If the action has no pose markers, fall back to scene timeline
+            # markers so the user isn't silently left with an empty notetrack.
+            if len(markers) == 0:
+                markers = context.scene.timeline_markers
         else:
-            # This should never happen!
             markers = []
 
-        notes = [XAnim.Note(marker.frame, marker.name) for marker in markers]
-        anim.notes = notes
+        anim.notes = collect_notes(markers, frame_start, frame_end)
 
-    # Write the XANIM_EXPORT file (and NT_EXPORT file if enabled)
     header_msg = shared.get_metadata_string(filepath)
     if target_format == 'XANIM_BIN':
         anim.WriteFile_Bin(filepath,
@@ -130,7 +172,7 @@ def save(self, context, filepath="",
          use_notetracks=True,
          use_notetrack_mode='ACTION',
          use_notetrack_file=False,
-         use_notetrack_format='1',  # TODO: Implement Notetrack Formats
+         use_notetrack_format='1',
          use_frame_range_mode='ACTION',
          frame_start=1,
          frame_end=250,
@@ -141,7 +183,6 @@ def save(self, context, filepath="",
     if not use_notetracks:
         use_notetrack_file = False
 
-    # Apply unit conversion factor to the scale
     if apply_unit_scale:
         global_scale /= shared.calculate_unit_scale_factor(context.scene)
 
@@ -152,7 +193,6 @@ def save(self, context, filepath="",
     if ob.animation_data is None:
         return "The selected armature has no animation data!"
 
-    # TODO: Progress counter
     progress = None
 
     actions = []
@@ -164,13 +204,11 @@ def save(self, context, filepath="",
     frame_original = context.scene.frame_current
     action_original = ob.animation_data.action
 
-    # Determine the framerate based on use_custom_framerate
     if not use_custom_framerate:
         framerate = context.scene.render.fps
     else:
         framerate = use_framerate
 
-    # Determine the frame range based on use_frame_range_mode
     if use_frame_range_mode == 'SCENE':
         frame_range = (context.scene.frame_start, context.scene.frame_end)
     elif use_frame_range_mode == 'CUSTOM':
@@ -181,6 +219,7 @@ def save(self, context, filepath="",
     filename_format = CustomTemplate(filename_format)
     path = os.path.dirname(filepath) + os.sep
     basename, ext = os.path.splitext(os.path.basename(filepath))
+
     for index, action in enumerate(actions):
         if use_all_actions:
             filename = filename_format.format(action.name, basename, index)
